@@ -1,0 +1,469 @@
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reconhecimento de Voz</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            min-height: 200px;
+            text-align: left;
+            font-size: 18px;
+            line-height: 1.5;
+        }
+        #status {
+            margin: 10px 0;
+            font-style: italic;
+            color: #666;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .unrecognized {
+            color: #ff0000;
+            font-style: italic;
+        }
+        .button-container {
+            margin: 20px 0;
+        }
+        
+        .button-container button {
+            margin: 0 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Reconhecimento de Voz</h1>
+    <p>Clique no botão abaixo e comece a falar. Suas palavras serão exibidas na tela.</p>
+    
+    <div class="button-container">
+        <button id="startStopBtn">Iniciar Reconhecimento</button>
+        <button id="speakBtn">Falar texto</button>
+        <button id="clearBtn">Limpar Texto</button>
+    </div>
+    <div id="status">Pronto para começar.</div>
+    
+    <div id="result"></div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const startStopBtn = document.getElementById('startStopBtn');
+            const speakBtn = document.getElementById('speakBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            const resultDiv = document.getElementById('result');
+            const statusDiv = document.getElementById('status');
+            
+            // Lista de nomes próprios aceitos
+            const nomesProprios = [
+                "Naira", "Parahuari", "Microvelsica", "Mihael"
+                // Adicione mais nomes conforme necessário
+            ];
+            
+            // Função para calcular a distância de Levenshtein (similaridade entre strings)
+            function levenshteinDistance(a, b) {
+                if (a.length === 0) return b.length;
+                if (b.length === 0) return a.length;
+                
+                const matrix = [];
+                
+                // Inicializar a matriz
+                for (let i = 0; i <= b.length; i++) {
+                    matrix[i] = [i];
+                }
+                
+                for (let j = 0; j <= a.length; j++) {
+                    matrix[0][j] = j;
+                }
+                
+                // Preencher a matriz
+                for (let i = 1; i <= b.length; i++) {
+                    for (let j = 1; j <= a.length; j++) {
+                        if (b.charAt(i - 1) === a.charAt(j - 1)) {
+                            matrix[i][j] = matrix[i - 1][j - 1];
+                        } else {
+                            matrix[i][j] = Math.min(
+                                matrix[i - 1][j - 1] + 1, // substituição
+                                Math.min(
+                                    matrix[i][j - 1] + 1, // inserção
+                                    matrix[i - 1][j] + 1  // remoção
+                                )
+                            );
+                        }
+                    }
+                }
+                
+                return matrix[b.length][a.length];
+            }
+            
+            // Função para encontrar o nome próprio mais próximo para uma palavra única
+            function findClosestName(word) {
+                // Normalizar palavra: remover acentos, converter para minúsculas
+                const normalizedWord = word.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                
+                let closestName = null;
+                let minDistance = Infinity;
+                let minThreshold = 0.4; // Limiar de similaridade (ajustável)
+                let bestSimilarity = 0;
+                
+                for (const name of nomesProprios) {
+                    // Normalizar nome da mesma forma
+                    const normalizedName = name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                    
+                    // Calcular distância de Levenshtein
+                    const distance = levenshteinDistance(normalizedWord, normalizedName);
+                    
+                    // Calcular similaridade normalizada (0-1, onde 1 é perfeita)
+                    const similarity = 1 - (distance / Math.max(normalizedWord.length, normalizedName.length));
+                    
+                    if (similarity > minThreshold && similarity > bestSimilarity) {
+                        minDistance = distance;
+                        bestSimilarity = similarity;
+                        closestName = name;
+                    }
+                }
+                
+                return { name: closestName, similarity: bestSimilarity };
+            }
+            
+            // Função para verificar se um grupo de palavras corresponde a um nome próprio
+            function checkWordGroupAsName(wordGroup) {
+                // Juntar as palavras sem espaço (para casos como "para ua ri" -> "parauari")
+                const joinedNoSpace = wordGroup.join('').toLowerCase();
+                
+                // Juntar as palavras com espaço (para casos como "são paulo" -> "São Paulo")
+                const joinedWithSpace = wordGroup.join(' ').toLowerCase();
+                
+                // Verificar ambas as formas
+                const resultNoSpace = findClosestName(joinedNoSpace);
+                const resultWithSpace = findClosestName(joinedWithSpace);
+                
+                // Retornar o resultado com maior similaridade
+                if (resultNoSpace.similarity > resultWithSpace.similarity) {
+                    return resultNoSpace;
+                } else {
+                    return resultWithSpace;
+                }
+            }
+            
+            // Função para processar o texto reconhecido e identificar nomes próprios
+            function processTranscript(words, confidence) {
+                let result = [];
+                let skipIndices = new Set();  // Para rastrear palavras que já foram processadas como parte de um nome
+                
+                // Tamanho máximo do grupo de palavras a considerar
+                const maxGroupSize = 4; // Podemos considerar até 4 palavras adjacentes como um possível nome
+                
+                // Verificar grupos de palavras adjacentes
+                for (let i = 0; i < words.length; i++) {
+                    // Se esta palavra já foi processada como parte de um nome, pule-a
+                    if (skipIndices.has(i)) continue;
+                    
+                    let bestMatch = { name: null, similarity: 0, groupSize: 0 };
+                    
+                    // Verificar diferentes tamanhos de grupo começando com esta palavra
+                    for (let groupSize = Math.min(maxGroupSize, words.length - i); groupSize > 0; groupSize--) {
+                        // Extrair o grupo de palavras
+                        const wordGroup = words.slice(i, i + groupSize);
+                        
+                        // Verificar se este grupo corresponde a um nome próprio
+                        const match = checkWordGroupAsName(wordGroup);
+                        
+                        // Se encontrou uma correspondência melhor
+                        if (match.name && match.similarity > bestMatch.similarity && match.similarity > 0.6) {
+                            bestMatch = { 
+                                name: match.name, 
+                                similarity: match.similarity, 
+                                groupSize: groupSize 
+                            };
+                        }
+                    }
+                    
+                    // Se encontramos uma correspondência para um grupo de palavras
+                    if (bestMatch.name) {
+                        // Adicionar o nome próprio encontrado ao resultado
+                        result.push(`<span style="color: green; font-weight: bold;">${bestMatch.name}</span>`);
+                        
+                        // Marcar todas as palavras deste grupo como processadas
+                        for (let j = 0; j < bestMatch.groupSize; j++) {
+                            skipIndices.add(i + j);
+                        }
+                        
+                        // Avançar o índice para depois do grupo
+                        i += bestMatch.groupSize - 1;
+                    } else {
+                        // Processar como palavra individual
+                        const word = words[i];
+                        if (word.trim() !== '') {
+                            if ((confidence < 0.7 && word.charAt(0) === word.charAt(0).toUpperCase()) || confidence < 0.5) {
+                                // Palavra com confiança baixa e não reconhecida como nome
+                                result.push(`<span class="unrecognized">${word}</span>`);
+                            } else {
+                                // Palavra normal
+                                result.push(word);
+                            }
+                        }
+                    }
+                }
+                
+                return result.join(' ');
+            }
+            
+            // Adicionar funcionalidade para limpar texto
+            clearBtn.addEventListener('click', function() {
+                resultDiv.innerHTML = '';
+                finalTranscript = '';
+                statusDiv.textContent = 'Texto limpo. Pronto para começar.';
+            });
+            
+            // Check if browser supports SpeechRecognition
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            
+            if (!SpeechRecognition) {
+                statusDiv.textContent = 'Seu navegador não suporta o reconhecimento de voz. Tente usar o Chrome.';
+                startStopBtn.disabled = true;
+                return;
+            }
+            
+            // Text to speech functionality
+            speakBtn.addEventListener('click', function() {
+                const textToSpeak = resultDiv.textContent;
+                
+                if (!textToSpeak.trim()) {
+                    statusDiv.textContent = 'Não há texto para ser lido.';
+                    return;
+                }
+                
+                if ('speechSynthesis' in window) {
+                    // Cancel any ongoing speech
+                    window.speechSynthesis.cancel();
+                    
+                    const utterance = new SpeechSynthesisUtterance(textToSpeak);
+                    utterance.lang = 'pt-BR';
+                    
+                    // Update status when speech starts
+                    utterance.onstart = function() {
+                        statusDiv.textContent = 'Falando...';
+                        speakBtn.textContent = 'Parar fala';
+                        speakBtn.dataset.speaking = 'true';
+                    };
+                    
+                    // Update status when speech ends
+                    utterance.onend = function() {
+                        statusDiv.textContent = 'Pronto para começar.';
+                        speakBtn.textContent = 'Falar texto';
+                        speakBtn.dataset.speaking = 'false';
+                    };
+                    
+                    // Handle speech errors
+                    utterance.onerror = function(event) {
+                        statusDiv.textContent = 'Erro na síntese de voz: ' + event.error;
+                        speakBtn.textContent = 'Falar texto';
+                        speakBtn.dataset.speaking = 'false';
+                    };
+                    
+                    // Check if already speaking
+                    if (speakBtn.dataset.speaking === 'true') {
+                        window.speechSynthesis.cancel();
+                        speakBtn.textContent = 'Falar texto';
+                        speakBtn.dataset.speaking = 'false';
+                        statusDiv.textContent = 'Fala interrompida.';
+                    } else {
+                        window.speechSynthesis.speak(utterance);
+                    }
+                } else {
+                    statusDiv.textContent = 'Seu navegador não suporta a síntese de voz.';
+                }
+            });
+            
+            // Criar uma única instância de reconhecimento de voz
+            const recognition = new SpeechRecognition();
+            recognition.lang = 'pt-BR';
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            
+            // Variável para controlar se já foi concedida permissão
+            let permissionGranted = false;
+            let isRecognizing = false;
+            let restartTimeout = null;
+            
+            // Função para verificar permissão de microfone
+            async function checkMicrophonePermission() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    // Fechar todas as faixas de áudio para liberar o microfone
+                    stream.getTracks().forEach(track => track.stop());
+                    permissionGranted = true;
+                    return true;
+                } catch (err) {
+                    console.error('Erro ao obter permissão do microfone:', err);
+                    statusDiv.textContent = 'Permissão para microfone negada. Verifique as configurações do navegador.';
+                    return false;
+                }
+            }
+            
+            // Iniciar reconhecimento de forma mais robusta
+            async function startRecognition() {
+                // Limpar qualquer timeout pendente
+                if (restartTimeout) {
+                    clearTimeout(restartTimeout);
+                    restartTimeout = null;
+                }
+                
+                if (!permissionGranted) {
+                    const hasPermission = await checkMicrophonePermission();
+                    if (!hasPermission) {
+                        startStopBtn.textContent = 'Iniciar Reconhecimento';
+                        isRecognizing = false;
+                        return;
+                    }
+                }
+                
+                try {
+                    recognition.start();
+                    startStopBtn.textContent = 'Parar Reconhecimento';
+                    statusDiv.textContent = 'Ouvindo...';
+                    isRecognizing = true;
+                } catch (error) {
+                    console.error('Erro ao iniciar reconhecimento:', error);
+                    // Se houver um erro porque o reconhecimento já está ativo
+                    if (error.name === 'InvalidStateError') {
+                        // Já está em execução, não fazer nada
+                    } else {
+                        statusDiv.textContent = 'Erro ao iniciar reconhecimento. Tente novamente.';
+                        isRecognizing = false;
+                        startStopBtn.textContent = 'Iniciar Reconhecimento';
+                    }
+                }
+            }
+            
+            // Parar reconhecimento de forma segura
+            function stopRecognition() {
+                // Limpar qualquer timeout pendente
+                if (restartTimeout) {
+                    clearTimeout(restartTimeout);
+                    restartTimeout = null;
+                }
+                
+                try {
+                    recognition.stop();
+                } catch (error) {
+                    console.error('Erro ao parar reconhecimento:', error);
+                }
+                
+                startStopBtn.textContent = 'Iniciar Reconhecimento';
+                statusDiv.textContent = 'Reconhecimento pausado.';
+                isRecognizing = false;
+            }
+            
+            startStopBtn.addEventListener('click', function() {
+                if (isRecognizing) {
+                    stopRecognition();
+                } else {
+                    startRecognition();
+                }
+            });
+            
+            // Create a container for final results
+            let finalTranscript = '';
+            
+            recognition.onresult = function(event) {
+                let interimTranscript = '';
+                
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const transcript = event.results[i][0].transcript;
+                    const confidence = event.results[i][0].confidence;
+                    
+                    if (event.results[i].isFinal) {
+                        // Processar o texto reconhecido
+                        const words = transcript.split(' ');
+                        const processedTranscript = processTranscript(words, confidence);
+                        
+                        finalTranscript += processedTranscript + ' ';
+                    } else {
+                        interimTranscript += transcript;
+                    }
+                }
+                
+                // Display results
+                resultDiv.innerHTML = finalTranscript + 
+                    '<span style="color: #999;">' + interimTranscript + '</span>';
+            };
+            
+            recognition.onerror = function(event) {
+                console.log('Erro de reconhecimento:', event.error);
+                
+                if (event.error === 'no-speech') {
+                    statusDiv.textContent = 'Nenhuma fala detectada. Tente novamente.';
+                } else if (event.error === 'audio-capture') {
+                    statusDiv.textContent = 'Não foi possível capturar áudio. Verifique seu microfone.';
+                    permissionGranted = false; // Redefinir o estado de permissão
+                } else if (event.error === 'not-allowed') {
+                    statusDiv.textContent = 'Permissão para usar o microfone foi negada.';
+                    permissionGranted = false; // Redefinir o estado de permissão
+                } else if (event.error === 'network') {
+                    statusDiv.textContent = 'Erro de rede. Verifique sua conexão com a internet.';
+                } else if (event.error === 'aborted') {
+                    statusDiv.textContent = 'Reconhecimento de fala interrompido.';
+                } else {
+                    statusDiv.textContent = 'Erro: ' + event.error;
+                }
+                
+                // Não faça nada automático aqui - o usuário decidirá se quer tentar novamente
+                isRecognizing = false;
+                startStopBtn.textContent = 'Iniciar Reconhecimento';
+            };
+            
+            recognition.onend = function() {
+                // Se estávamos escutando e não foi explicitamente interrompido pelo usuário
+                if (isRecognizing) {
+                    // Adicionar um pequeno atraso antes de reiniciar para evitar ciclos de erro rápidos
+                    restartTimeout = setTimeout(() => {
+                        if (isRecognizing) {
+                            try {
+                                recognition.start();
+                            } catch (error) {
+                                console.error('Erro ao reiniciar reconhecimento:', error);
+                                isRecognizing = false;
+                                startStopBtn.textContent = 'Iniciar Reconhecimento';
+                                statusDiv.textContent = 'Erro ao reiniciar. Tente novamente manualmente.';
+                            }
+                        }
+                    }, 300);
+                } else {
+                    startStopBtn.textContent = 'Iniciar Reconhecimento';
+                    statusDiv.textContent = 'Reconhecimento pausado.';
+                }
+            };
+            
+            // Verificar permissão inicial quando a página carrega
+            checkMicrophonePermission();
+        });
+    </script>
+</body>
+</html>
